@@ -1,0 +1,6 @@
+[submodule "easyloggingpp"]
+	path = easyloggingpp
+	url = https://github.com/muflihun/easyloggingpp.git
+[submodule "libfuse"]
+	path = libfuse
+	url = https://github.com/libfuse/libfuse.git
