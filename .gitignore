@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Temp files.
+*.swp
+
+# Build
+build/

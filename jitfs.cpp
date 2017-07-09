@@ -20,6 +20,26 @@
 
 INITIALIZE_EASYLOGGINGPP
 
+/**
+ * Exception safe cleanup of sqlite statement.
+ */
+class SQLiteStmtGuard {
+public:
+    SQLiteStmtGuard(sqlite3_stmt *stmt): _stmt(stmt) {
+    }
+
+    ~SQLiteStmtGuard() {
+        sqlite3_clear_bindings(_stmt);
+        sqlite3_reset(_stmt);
+    }
+
+private:
+    sqlite3_stmt *_stmt;
+};
+
+/**
+ * Global settings for jitfs.
+ */
 struct global_config {
     blksize_t blksize;
     std::string cache;
@@ -37,7 +57,7 @@ struct global_config {
 
 static global_config global_cfg;
 
-static int _lstat(const char *path, struct stat *out) 
+static int _lstat(const char *path, struct stat *out)
 {
     // path - /<sha256>
     if (!path[1]) {
@@ -47,10 +67,15 @@ static int _lstat(const char *path, struct stat *out)
         return 0;
     }
 
-    int rc;
-    rc = sqlite3_bind_text(global_cfg.select_stmt, 1, path + 1, -1, NULL);
-    rc = sqlite3_step(global_cfg.select_stmt);
+    SQLiteStmtGuard stmt_guard(global_cfg.select_stmt);
 
+    int rc = sqlite3_bind_text(global_cfg.select_stmt, 1, path + 1, -1, NULL);
+    if (rc != SQLITE_OK) {
+        LOG(ERROR) << "sqlite3_bind_text, rc: " << rc;
+        return -ENOENT;
+    }
+
+    rc = sqlite3_step(global_cfg.select_stmt);
     if (rc == SQLITE_DONE) {
         LOG(DEBUG) << "row not found, ENOENT";
         return -ENOENT;
@@ -59,13 +84,11 @@ static int _lstat(const char *path, struct stat *out)
     int mode = sqlite3_column_int(global_cfg.select_stmt, 0);
     int size = sqlite3_column_int(global_cfg.select_stmt, 1);
 
-    LOG(DEBUG) << "Metadata: " << path << 
+    LOG(DEBUG) << "Metadata: " << path <<
         ", size: " << size << ", mode: " << mode;
-    sqlite3_clear_bindings(global_cfg.select_stmt);
-    sqlite3_reset(global_cfg.select_stmt);
 
     struct stat fstat = {0};
-    
+
     fstat.st_ino = (ino_t) rand();
     fstat.st_nlink = 1;
     fstat.st_uid = 1;
@@ -80,7 +103,7 @@ static int _lstat(const char *path, struct stat *out)
     std::string path_s(path);
     fstat.st_size = (off_t) size;
 
-    LOG(DEBUG) << "stat: " 
+    LOG(DEBUG) << "stat: "
         << " .st_mode: " << fstat.st_mode
         << " .st_size: " << fstat.st_size;
 
@@ -88,7 +111,7 @@ static int _lstat(const char *path, struct stat *out)
     return 0;
 }
 
-static std::string cache_path(const char *path) 
+static std::string cache_path(const char *path)
 {
     // path is /<sha256>
     std::string checksum(path + 1);
@@ -96,12 +119,12 @@ static std::string cache_path(const char *path)
     str << global_cfg.cache << "/"
         << checksum.substr(0, 2) << "/"
         << checksum.substr(2, 2) << "/" << checksum;
-    
+
     LOG(DEBUG) << "cache path: " << str.str();
     std::string out_path = str.str();
 
     if (access(out_path.c_str(), F_OK) != 0) {
-        struct sockaddr *serv_addr = 
+        struct sockaddr *serv_addr =
             (struct sockaddr *) &global_cfg.jitfs_srv_addr;
         socklen_t serv_addr_len = sizeof(global_cfg.jitfs_srv_addr);
 
@@ -179,25 +202,25 @@ static int jitfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 static int jitfs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
     LOG(DEBUG) << "mknod: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_mkdir(const char *path, mode_t mode)
 {
     LOG(DEBUG) << "mkdir: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_unlink(const char *path)
 {
     LOG(DEBUG) << "unlink: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_rmdir(const char *path)
 {
     LOG(DEBUG) << "rmdir: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_symlink(const char *from, const char *to)
@@ -222,28 +245,28 @@ static int jitfs_chmod(const char *path, mode_t mode,
 		     struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "chmod: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_chown(const char *path, uid_t uid, gid_t gid,
 		     struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "chown: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_truncate(const char *path, off_t size,
 			struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "truncate: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_create(const char *path, mode_t mode,
 		      struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "create: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_open(const char *path, struct fuse_file_info *fi)
@@ -269,7 +292,7 @@ static int jitfs_read(const char *path, char *buf, size_t size, off_t offset,
 		fd = open(cache_path(path).c_str(), O_RDONLY);
 	else
 		fd = fi->fh;
-	
+
 	if (fd == -1)
 		return -errno;
 
@@ -286,7 +309,7 @@ static int jitfs_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "write: " << path;
-    return -EACCES;	
+    return -EACCES;
 }
 
 static int jitfs_statfs(const char *path, struct statvfs *stbuf)
@@ -320,7 +343,7 @@ static int jitfs_fsync(const char *path, int isdatasync,
 	return 0;
 }
 
-static void init_fuse_operations(struct fuse_operations &op) 
+static void init_fuse_operations(struct fuse_operations &op)
 {
     op.init         = jitfs_init;
     op.getattr	    = jitfs_getattr;
@@ -338,7 +361,7 @@ static void init_fuse_operations(struct fuse_operations &op)
     op.chown		= jitfs_chown;
     op.truncate	    = jitfs_truncate;
     op.open		    = jitfs_open;
-    op.create 	    = jitfs_create;
+    op.create	    = jitfs_create;
     op.read		    = jitfs_read;
     op.write		= jitfs_write;
     op.statfs		= jitfs_statfs;
@@ -374,12 +397,12 @@ static struct fuse_opt jitfs_opts[] = {
 
 static struct fuse_operations jitfs_operations = {0};
 
-static int jitfs_opt_proc(void *data, const char *arg, int key, 
+static int jitfs_opt_proc(void *data, const char *arg, int key,
         struct fuse_args *outargs)
 {
     switch (key) {
         case KEY_HELP:
-            std::cerr << 
+            std::cerr <<
                 "usage: " << outargs->argv[0] << "  mountpoint [options]\n"
                 "\n"
                 "general options:\n"
@@ -405,15 +428,15 @@ static int jitfs_opt_proc(void *data, const char *arg, int key,
     return 1;
 }
 
-void init_log() 
+void init_log()
 {
     el::Configurations log_conf;
     log_conf.setToDefault();
     log_conf.set(
-            el::Level::Info, 
+            el::Level::Info,
             el::ConfigurationType::Format, "%datetime %level %msg");
     log_conf.set(
-            el::Level::Debug, 
+            el::Level::Debug,
             el::ConfigurationType::Format, "%datetime %level [%loc] %msg");
     el::Loggers::reconfigureAllLoggers(log_conf);
     log_conf.clear();
@@ -421,10 +444,12 @@ void init_log()
 
 int _init_db()
 {
+    LOG(INFO) << "Using db: " << global_cfg.db_filename;
+
     int rc = sqlite3_open_v2(
-            global_cfg.db_filename.c_str(), 
-            &global_cfg.db, 
-            SQLITE_OPEN_READONLY, 
+            global_cfg.db_filename.c_str(),
+            &global_cfg.db,
+            SQLITE_OPEN_READONLY,
             NULL);
     if (rc != 0) {
         LOG(ERROR) << "Unable to open db: " << global_cfg.db_filename
@@ -441,7 +466,7 @@ int _init_db()
         LOG(ERROR) << "Unable to prepare db statement, rc = " << rc;
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -450,7 +475,7 @@ int _init_stat()
     struct stat stbuf = {0};
     int rc = lstat(global_cfg.cache.c_str(), &stbuf);
     if (rc != 0) {
-        LOG(ERROR) << "Error: lstat " << global_cfg.cache 
+        LOG(ERROR) << "Error: lstat " << global_cfg.cache
             << ", errno: " << errno;
         return -1;
     }
@@ -470,15 +495,15 @@ int _init_sock()
     struct sockaddr_un server_addr;
     _make_un_addr(global_cfg.jitfs_srv_sock.c_str(), &server_addr);
     global_cfg.jitfs_srv_addr = server_addr;
-   
+
     // Ensure socket path does not exist.
     std::stringstream reply_sock_str;
     reply_sock_str << global_cfg.jitfs_srv_sock << ".reply." << getpid();
     const std::string reply_sock = reply_sock_str.str();
-    
+
     struct sockaddr_un reply_addr;
     _make_un_addr(reply_sock.c_str(), &reply_addr);
-    
+
     // create socket
     int sock = socket(PF_UNIX, SOCK_DGRAM, 0);
     if (!sock) {
@@ -488,7 +513,11 @@ int _init_sock()
 
     // Bind socket to reply address.
     unlink(reply_sock.c_str());
-    int rc = bind(sock, (const struct sockaddr *)&reply_addr, sizeof(reply_addr));
+    int rc = bind(
+        sock,
+        (const struct sockaddr *)&reply_addr,
+        sizeof(reply_addr)
+    );
     if (rc != 0) {
         LOG(ERROR) << "bind " << reply_sock
             << ": " << strerror(errno);
@@ -505,7 +534,7 @@ int main(int argc, char *argv[])
 
     LOG(INFO) << "Starting jitfs.";
 	umask(0);
-    
+
     init_fuse_operations(jitfs_operations);
 
     fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -532,13 +561,13 @@ int main(int argc, char *argv[])
         LOG(ERROR) << "Error initializing db.";
         return -1;
     }
- 
+
     if (global_cfg.jitfs_srv_sock[0]) {
         if (_init_sock() != 0) {
             LOG(ERROR) << "Error initializing socket.";
             return -1;
         }
     }
-    
+
     return fuse_main(args.argc, args.argv, &jitfs_operations, NULL);
 }
