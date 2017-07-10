@@ -62,7 +62,7 @@ static int _lstat(const char *path, struct stat *out)
     // path - /<sha256>
     if (!path[1]) {
         if (-1 == lstat(global_cfg.cache.c_str(), out)) {
-		    return -errno;
+            return -errno;
         }
         return 0;
     }
@@ -84,7 +84,7 @@ static int _lstat(const char *path, struct stat *out)
     int mode = sqlite3_column_int(global_cfg.select_stmt, 0);
     int size = sqlite3_column_int(global_cfg.select_stmt, 1);
 
-    LOG(DEBUG) << "Metadata: " << path <<
+    LOG(DEBUG) << "metadata: " << path <<
         ", size: " << size << ", mode: " << mode;
 
     struct stat fstat = {0};
@@ -151,22 +151,14 @@ static void *jitfs_init(struct fuse_conn_info *conn,
         struct fuse_config *cfg)
 {
     LOG(DEBUG) << "init.";
-	(void) conn;
-	cfg->use_ino = 0;
+    (void) conn;
+    cfg->use_ino = 0;
     cfg->readdir_ino = 0;
+    cfg->entry_timeout = 0;
+    cfg->attr_timeout = 0;
+    cfg->negative_timeout = 0;
 
-	/* Pick up changes from lower filesystem right away. This is
-	   also necessary for better hardlink support. When the kernel
-	   calls the unlink() handler, it does not know the inode of
-	   the to-be-removed entry and can therefore not invalidate
-	   the cache of the associated inode - resulting in an
-	   incorrect st_nlink value being reported for any remaining
-	   hardlinks to this inode. */
-	cfg->entry_timeout = 0;
-	cfg->attr_timeout = 0;
-	cfg->negative_timeout = 0;
-
-	return NULL;
+    return NULL;
 }
 
 static int jitfs_getattr(const char *path, struct stat *stbuf,
@@ -174,7 +166,7 @@ static int jitfs_getattr(const char *path, struct stat *stbuf,
 {
     LOG(DEBUG) << "getattr: " << path;
 
-	(void) fi;
+    (void) fi;
     return _lstat(path, stbuf);
 }
 
@@ -242,28 +234,28 @@ static int jitfs_link(const char *from, const char *to)
 }
 
 static int jitfs_chmod(const char *path, mode_t mode,
-		     struct fuse_file_info *fi)
+             struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "chmod: " << path;
     return -EACCES;
 }
 
 static int jitfs_chown(const char *path, uid_t uid, gid_t gid,
-		     struct fuse_file_info *fi)
+             struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "chown: " << path;
     return -EACCES;
 }
 
 static int jitfs_truncate(const char *path, off_t size,
-			struct fuse_file_info *fi)
+            struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "truncate: " << path;
     return -EACCES;
 }
 
 static int jitfs_create(const char *path, mode_t mode,
-		      struct fuse_file_info *fi)
+              struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "create: " << path;
     return -EACCES;
@@ -273,40 +265,66 @@ static int jitfs_open(const char *path, struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "open: " << path;
 
-	int res = open(cache_path(path).c_str(), fi->flags);
-	if (res == -1)
-		return -errno;
+    int res = open(cache_path(path).c_str(), fi->flags);
+    if (res == -1)
+        return -errno;
 
-	fi->fh = res;
-	return 0;
+    fi->fh = res;
+    return 0;
 }
 
 static int jitfs_read(const char *path, char *buf, size_t size, off_t offset,
-		    struct fuse_file_info *fi)
+            struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "read: " << path;
 
-	int fd;
+    int fd;
 
-	if(fi == NULL)
-		fd = open(cache_path(path).c_str(), O_RDONLY);
-	else
-		fd = fi->fh;
+    if(fi == NULL)
+        fd = open(cache_path(path).c_str(), O_RDONLY);
+    else
+        fd = fi->fh;
 
-	if (fd == -1)
-		return -errno;
+    if (fd == -1)
+        return -errno;
 
-	int res = pread(fd, buf, size, offset);
-	if (res == -1)
-		res = -errno;
+    int res = pread(fd, buf, size, offset);
+    if (res == -1)
+        res = -errno;
 
-	if (fi == NULL)
-		close(fd);
-	return res;
+    if (fi == NULL)
+        close(fd);
+    return res;
 }
 
+static int jitfs_read_buf(const char *path, struct fuse_bufvec **bufp,
+            size_t size, off_t offset, struct fuse_file_info *fi)
+{
+    LOG(DEBUG) << "read_buf: " << path
+        << ", size: " << size << ", offset: " << offset;
+
+    struct fuse_bufvec *src;
+
+    (void) path;
+
+    src = (fuse_bufvec *)malloc(sizeof(struct fuse_bufvec));
+    if (src == NULL)
+        return -ENOMEM;
+
+    *src = FUSE_BUFVEC_INIT(size);
+
+    src->buf[0].flags = (fuse_buf_flags)(FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK);
+    src->buf[0].fd = fi->fh;
+    src->buf[0].pos = offset;
+
+    *bufp = src;
+    return 0;
+}
+
+
+
 static int jitfs_write(const char *path, const char *buf, size_t size,
-		     off_t offset, struct fuse_file_info *fi)
+             off_t offset, struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "write: " << path;
     return -EACCES;
@@ -316,57 +334,58 @@ static int jitfs_statfs(const char *path, struct statvfs *stbuf)
 {
     LOG(DEBUG) << "statfs: " << path;
 
-	int res = statvfs(path, stbuf);
-	if (res == -1)
-		return -errno;
+    int res = statvfs(path, stbuf);
+    if (res == -1)
+        return -errno;
 
-	return 0;
+    return 0;
 }
 
 static int jitfs_release(const char *path, struct fuse_file_info *fi)
 {
     LOG(DEBUG) << "release: " << path;
-	(void) path;
-	close(fi->fh);
-	return 0;
+    (void) path;
+    close(fi->fh);
+    return 0;
 }
 
 static int jitfs_fsync(const char *path, int isdatasync,
-		     struct fuse_file_info *fi)
+             struct fuse_file_info *fi)
 {
-	/* Just a stub.	 This method is optional and can safely be left
-	   unimplemented */
+    /* Just a stub.  This method is optional and can safely be left
+       unimplemented */
     LOG(DEBUG) << "fsync: " << path;
-	(void) path;
-	(void) isdatasync;
-	(void) fi;
-	return 0;
+    (void) path;
+    (void) isdatasync;
+    (void) fi;
+    return 0;
 }
 
 static void init_fuse_operations(struct fuse_operations &op)
 {
     op.init         = jitfs_init;
-    op.getattr	    = jitfs_getattr;
-    op.access		= jitfs_access;
-    op.readlink	    = jitfs_readlink;
+    op.getattr      = jitfs_getattr;
+    op.access       = jitfs_access;
+    op.readlink     = jitfs_readlink;
     op.readdir      = jitfs_readdir;
-    op.mknod		= jitfs_mknod;
-    op.mkdir		= jitfs_mkdir;
-    op.symlink	    = jitfs_symlink;
-    op.unlink		= jitfs_unlink;
-    op.rmdir		= jitfs_rmdir;
-    op.rename		= jitfs_rename;
-    op.link		    = jitfs_link;
-    op.chmod		= jitfs_chmod;
-    op.chown		= jitfs_chown;
-    op.truncate	    = jitfs_truncate;
-    op.open		    = jitfs_open;
-    op.create	    = jitfs_create;
-    op.read		    = jitfs_read;
-    op.write		= jitfs_write;
-    op.statfs		= jitfs_statfs;
-    op.release	    = jitfs_release;
-    op.fsync		= jitfs_fsync;
+    op.mknod        = jitfs_mknod;
+    op.mkdir        = jitfs_mkdir;
+    op.symlink      = jitfs_symlink;
+    op.unlink       = jitfs_unlink;
+    op.rmdir        = jitfs_rmdir;
+    op.rename       = jitfs_rename;
+    op.link         = jitfs_link;
+    op.chmod        = jitfs_chmod;
+    op.chown        = jitfs_chown;
+    op.truncate     = jitfs_truncate;
+    op.open         = jitfs_open;
+    op.create       = jitfs_create;
+    op.read         = jitfs_read;
+    op.read_buf     = jitfs_read_buf;
+    op.write        = jitfs_write;
+    op.statfs       = jitfs_statfs;
+    op.release      = jitfs_release;
+    op.fsync        = jitfs_fsync;
     return;
 }
 
@@ -533,7 +552,7 @@ int main(int argc, char *argv[])
     init_log();
 
     LOG(INFO) << "Starting jitfs.";
-	umask(0);
+    umask(0);
 
     init_fuse_operations(jitfs_operations);
 
